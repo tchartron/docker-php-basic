@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME:-app}-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "3306:3306"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_http_router.entrypoints=http
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_http_router.rule=Host(`traefik.${DOMAIN:-wordpress.docker}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_http_router.middlewares=https-redirect@file
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_https_router.entrypoints=https
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_https_router.rule=Host(`traefik.${DOMAIN:-wordpress.docker}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_https_router.tls=true
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_https_router.tls.domains[0].main=traefik.${DOMAIN:-wordpress.docker}
+      - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_traefik_https_router.service=api@internal
+    volumes:
+      - ./docker/traefik/certs:/etc/certs
+      - ./docker/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./docker/traefik/config/dynamic_conf.yml:/etc/traefik/dynamic_conf/dynamic_conf.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - default
+
+  nginx:
+    image: nginx:${NGINX_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME:-app}-nginx
+    restart: unless-stopped
+    labels:
+        - traefik.enable=true
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_http_router.rule=Host(`${DOMAIN:-wordpress.docker}`) || Host(`www.${DOMAIN:-wordpress.docker}`)
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_http_router.entrypoints=http
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_http_router.middlewares=https-redirect@file
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_http_router.service=${COMPOSE_PROJECT_NAME-app}_http_service
+        - traefik.http.services.${COMPOSE_PROJECT_NAME:-app}_http_service.loadbalancer.server.port=80
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_https_router.rule=Host(`${DOMAIN:-wordpress.docker}`) || Host(`www.${DOMAIN:-wordpress.docker}`)
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_https_router.entrypoints=https
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_https_router.tls=true
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_https_router.tls.domains[0].main=${DOMAIN:-wordpress.docker}
+        - traefik.http.routers.${COMPOSE_PROJECT_NAME:-app}_https_router.service=${COMPOSE_PROJECT_NAME-app}_https_service
+        - traefik.http.services.${COMPOSE_PROJECT_NAME:-app}_https_service.loadbalancer.server.port=8000
+    volumes:
+      - .:/var/www
+      - ./docker/nginx/conf.d/wordpress.conf:/etc/nginx/conf.d/default.conf
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+    working_dir: /var/www
+    networks:
+      - default
+
+  php:
+    build:
+      context: .
+      dockerfile: ./docker/php/Dockerfile
+      args:
+        - PHP_VERSION=${PHP_VERSION:-8.1}
+    container_name: ${COMPOSE_PROJECT_NAME:-app}-php
+    restart: unless-stopped
+    labels:
+        - traefik.enable=true
+        - traefik.tcp.routers.${COMPOSE_PROJECT_NAME:-app}_php_router.service=${COMPOSE_PROJECT_NAME:-app}_php_service
+        - traefik.tcp.services.${COMPOSE_PROJECT_NAME:-app}_php_service.loadbalancer.server.port=9000
+    volumes:
+      - .:/var/www
+    working_dir: /var/www
+    networks:
+      - default
+
+  mysql:
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${COMPOSE_PROJECT_NAME:-app}-mysql
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-app}
+      - MYSQL_USER=${MYSQL_USER:-app}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-secret}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-secret}
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.tcp.routers.${COMPOSE_PROJECT_NAME:-app}_mysql_router.rule=HostSNI(`*`)
+      - traefik.tcp.routers.${COMPOSE_PROJECT_NAME:-app}_mysql_router.entrypoints=mysql
+      - traefik.tcp.routers.${COMPOSE_PROJECT_NAME:-app}_mysql_router.service=${COMPOSE_PROJECT_NAME:-app}_mysql_service
+      - traefik.tcp.services.${COMPOSE_PROJECT_NAME:-app}_mysql_service.loadbalancer.server.port=3306
+    volumes:
+      - wordpress-mysql:/var/lib/mysql
+    networks:
+      - default
+
+networks:
+  default:
+    name: ${COMPOSE_PROJECT_NAME:-app}-network
+    driver: bridge
+    external: true
+
+volumes:
+  wordpress-mysql:
+    driver: local
